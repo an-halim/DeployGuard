@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Build application
+        run: npm run build
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build production image
+        run: docker build --tag deployguard:${{ github.sha }} .
+
+      - name: Smoke test production runtime
+        env:
+          DEPLOYGUARD_IMAGE: deployguard:${{ github.sha }}
+          DEPLOYGUARD_PORT: "18080"
+        run: |
+          cleanup() {
+            docker compose -f compose.production.yml down
+          }
+          trap cleanup EXIT
+          docker compose -f compose.production.yml up -d --wait --wait-timeout 60
+          curl --fail --silent --show-error http://127.0.0.1:18080/healthz
+          headers=$(curl --fail --silent --show-error --head http://127.0.0.1:18080/)
+          grep --ignore-case '^content-security-policy:' <<< "$headers"
+          grep --ignore-case '^x-frame-options: DENY' <<< "$headers"
